@@ -11,7 +11,7 @@ const NOW = new Date();
 const THIS_YEAR = NOW.getFullYear();
 
 const state = {
-  books: [], view: 'shelf', q: '', fmt: null,
+  books: [], view: 'shelf', q: '', fmt: null, backlogSort: 'newest',
   statsYear: THIS_YEAR, compare: 'prev', showTable: false,
   dirty: new Set(), lastBackup: null, coverJob: null,
   get changes() { return this.dirty.size; },
@@ -28,7 +28,10 @@ const icon = (id, cls = 'ic') => `<svg class="${cls}" aria-hidden="true"><use hr
 // ---------- book helpers ----------
 const formatsOf = b => (b.format || 'Physical').split('/').filter(Boolean);
 const fmtKey = b => { const f = formatsOf(b); return f.length === 1 ? f[0] : 'Mixed'; };
-const isReading = b => !b.finished;
+// A book is on the backlog (owned, not started), being read, or finished.
+const statusOf = b => (b.status === 'backlog' ? 'backlog' : b.finished ? 'finished' : 'reading');
+const isReading = b => statusOf(b) === 'reading';
+const isBacklog = b => statusOf(b) === 'backlog';
 const finYear = b => (b.finished ? +b.finished.slice(0, 4) : null);
 function finDate(b) {
   if (!b.finished) return null;
@@ -69,6 +72,7 @@ const norm = s => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase
 // ---------- persistence ----------
 async function saveBook(b, { quiet } = {}) {
   b.updated = today();
+  b.status = statusOf(b);
   const i = state.books.findIndex(x => x.id === b.id);
   if (i >= 0) state.books[i] = b; else state.books.push(b);
   await db.put(b);
@@ -98,12 +102,14 @@ function toast(msg, action) {
 function setView(v) {
   state.view = v;
   $$('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.view === v)));
+  $('#addBtn span').textContent = v === 'backlog' ? 'Add to backlog' : 'Add book';
   hideTip();
   render();
   window.scrollTo({ top: 0 });
 }
 function render() {
   if (state.view === 'shelf') renderShelf();
+  else if (state.view === 'backlog') renderBacklog();
   else if (state.view === 'stats') renderStats();
   else renderBackup();
 }
@@ -115,22 +121,50 @@ function backupBanner() {
   return `<div class="banner">${icon('cloud')}<p>${plural(state.changes, 'book')} changed on this iPad ${since}.</p><button class="btn" data-act="backup">Back up now</button></div>`;
 }
 
+function matches(b) {
+  const q = norm(state.q);
+  return (!q || norm(b.title).includes(q) || norm(b.author).includes(q) || (b.isbn || '').includes(q)) &&
+    (!state.fmt || formatsOf(b).includes(state.fmt));
+}
+function cardLine(b) {
+  const st = statusOf(b);
+  if (st === 'backlog') return b.added ? 'Added ' + showDate(b.added) : 'On your backlog';
+  if (st === 'reading') return b.started ? 'Started ' + showDate(b.started) : 'Reading';
+  return showDate(b.finished);
+}
+const card = b => `<button class="book" data-id="${b.id}">
+    <div style="position:relative">${coverHTML(b)}${isReading(b) ? '<span class="badge-reading">Reading</span>' : ''}</div>
+    <span class="meta"><span class="t">${esc(b.title)}</span><span class="a">${esc(b.author)}</span>
+    <span class="f">${fmtIcons(b)}<span>${esc(cardLine(b))}</span></span></span>
+  </button>`;
+function toolbar(extra = '') {
+  return `<div class="toolbar">
+      <label class="search">${icon('search')}<span class="visually-hidden">Search</span>
+        <input class="input" type="search" id="q" placeholder="Search titles, authors, ISBNs" value="${esc(state.q)}" autocomplete="off"></label>
+      <div class="chips" role="group" aria-label="Format">
+        <button class="chip" aria-pressed="${!state.fmt}" data-fmt="">All</button>
+        ${FORMATS.map(f => `<button class="chip" aria-pressed="${state.fmt === f}" data-fmt="${f}">${icon(f.toLowerCase())}${f}</button>`).join('')}
+      </div>${extra}
+    </div>`;
+}
+function wireSearch() {
+  const qi = $('#q');
+  qi?.addEventListener('input', () => {
+    state.q = qi.value;
+    const pos = qi.selectionStart;
+    render();
+    const n = $('#q'); n.focus(); n.setSelectionRange(pos, pos);
+  });
+}
+
 function renderShelf() {
   if (!state.books.length) return renderEmpty();
   const q = norm(state.q);
-  const list = state.books.filter(b =>
-    (!q || norm(b.title).includes(q) || norm(b.author).includes(q) || (b.isbn || '').includes(q)) &&
-    (!state.fmt || formatsOf(b).includes(state.fmt)));
+  const list = state.books.filter(b => !isBacklog(b) && matches(b));
   const reading = list.filter(isReading).sort((a, b) => (b.started || '').localeCompare(a.started || ''));
   const byYear = new Map();
-  list.filter(b => !isReading(b)).sort((a, b) => b.finished.localeCompare(a.finished) || (b.updated || '').localeCompare(a.updated || ''))
+  list.filter(b => statusOf(b) === 'finished').sort((a, b) => b.finished.localeCompare(a.finished) || (b.updated || '').localeCompare(a.updated || ''))
     .forEach(b => { const y = finYear(b); if (!byYear.has(y)) byYear.set(y, []); byYear.get(y).push(b); });
-
-  const card = b => `<button class="book" data-id="${b.id}">
-      <div style="position:relative">${coverHTML(b)}${isReading(b) ? '<span class="badge-reading">Reading</span>' : ''}</div>
-      <span class="meta"><span class="t">${esc(b.title)}</span><span class="a">${esc(b.author)}</span>
-      <span class="f">${fmtIcons(b)}<span>${esc(isReading(b) ? (b.started ? 'Started ' + showDate(b.started) : 'Reading') : showDate(b.finished))}</span></span></span>
-    </button>`;
 
   const todayDoy = dayOfYear(NOW);
   const yearHead = (y, n) => {
@@ -142,27 +176,53 @@ function renderShelf() {
     return `<div class="year-head"><h2>${y}</h2><span class="count">${plural(n, 'book')}</span>${vs}</div>`;
   };
 
+  const nothing = !state.books.some(b => !isBacklog(b));
   main.innerHTML = `
-    <div class="toolbar">
-      <label class="search">${icon('search')}<span class="visually-hidden">Search</span>
-        <input class="input" type="search" id="q" placeholder="Search titles, authors, ISBNs" value="${esc(state.q)}" autocomplete="off"></label>
-      <div class="chips" role="group" aria-label="Format">
-        <button class="chip" aria-pressed="${!state.fmt}" data-fmt="">All</button>
-        ${FORMATS.map(f => `<button class="chip" aria-pressed="${state.fmt === f}" data-fmt="${f}">${icon(f.toLowerCase())}${f}</button>`).join('')}
-      </div>
-    </div>
+    ${toolbar()}
     ${backupBanner()}
     ${reading.length ? `<section class="shelf-section reading-now"><div class="year-head"><h2>Reading now</h2></div><div class="grid">${reading.map(card).join('')}</div></section>` : ''}
     ${[...byYear].map(([y, bs]) => `<section class="shelf-section">${yearHead(y, bs.length)}<div class="grid">${bs.map(card).join('')}</div></section>`).join('')}
-    ${!reading.length && !byYear.size ? `<p class="no-results">No books match “${esc(state.q)}”${state.fmt ? ` in ${state.fmt}` : ''}.</p>` : ''}
+    ${nothing ? `<p class="no-results">Nothing on your shelf yet. When you start a book from your backlog it appears here under Reading now.</p>`
+      : !reading.length && !byYear.size ? `<p class="no-results">No books match “${esc(state.q)}”${state.fmt ? ` in ${state.fmt}` : ''}.</p>` : ''}
   `;
-  const qi = $('#q');
-  qi.addEventListener('input', () => {
-    state.q = qi.value;
-    const pos = qi.selectionStart;
-    renderShelf();
-    const n = $('#q'); n.focus(); n.setSelectionRange(pos, pos);
-  });
+  wireSearch();
+}
+
+// ---------- backlog ----------
+const SORTS = {
+  newest: ['Recently added', (a, b) => (b.added || '').localeCompare(a.added || '') || (b.updated || '').localeCompare(a.updated || '')],
+  oldest: ['Waiting longest', (a, b) => (a.added || '').localeCompare(b.added || '')],
+  author: ['Author', (a, b) => surname(a.author).localeCompare(surname(b.author)) || a.title.localeCompare(b.title)],
+  title: ['Title', (a, b) => a.title.replace(/^(the|a|an) /i, '').localeCompare(b.title.replace(/^(the|a|an) /i, ''))],
+};
+const surname = a => (a || '').split(',')[0].trim().split(/\s+/).pop().toLowerCase();
+
+function renderBacklog() {
+  const all = state.books.filter(isBacklog);
+  if (!all.length) {
+    main.innerHTML = `<div class="empty">
+      <h1>Your backlog is empty</h1>
+      <p>Add the books you own but haven’t started yet. When you start one, open it and tick “I’ve started reading this” to move it to Reading now.</p>
+      <div class="row"><button class="btn primary" data-act="add">${icon('plus')}Add to backlog</button></div></div>`;
+    return;
+  }
+  const list = all.filter(matches).sort(SORTS[state.backlogSort][1]);
+  const oldest = all.map(b => b.added).filter(Boolean).sort()[0];
+  const sortSel = `<label class="compare sort">Sort by <select class="input" id="sortSel">${Object.entries(SORTS).map(([k, [lab]]) => `<option value="${k}" ${state.backlogSort === k ? 'selected' : ''}>${lab}</option>`).join('')}</select></label>`;
+  main.innerHTML = `
+    ${toolbar(sortSel)}
+    <section class="shelf-section">
+      <div class="year-head"><h2>Backlog</h2><span class="count">${plural(all.length, 'book')} waiting</span>${oldest ? `<span class="vs">oldest added ${esc(showDate(oldest))}</span>` : ''}</div>
+      ${list.length ? `<div class="grid">${list.map(card).join('')}</div>` : `<p class="no-results">No backlog books match “${esc(state.q)}”${state.fmt ? ` in ${state.fmt}` : ''}.</p>`}
+    </section>`;
+  wireSearch();
+  $('#sortSel').onchange = e => { state.backlogSort = e.target.value; renderBacklog(); };
+}
+
+async function startReading(b) {
+  const before = { ...b };
+  await saveBook({ ...b, status: 'reading', started: today(), finished: '' });
+  toast(`“${b.title}” moved to Reading now`, { label: 'Undo', run: () => saveBook(before) });
 }
 
 async function renderEmpty() {
@@ -185,12 +245,13 @@ function openDetail(id) {
   const b = state.books.find(x => x.id === id);
   if (!b) return;
   const days = daysBetween(b.started, b.finished);
+  const backlog = isBacklog(b);
   const facts = [
     ['ISBN', b.isbn], ['Pages', b.pages], ['Publisher', b.publisher], ['Published', b.published],
   ].filter(([, v]) => v);
-  const stamp = (s, cls = '') => s ? `<span class="stamp ${cls}">${esc(showDate(s).toUpperCase())}</span>` : `<span class="stamp none">${cls ? 'not yet' : 'not logged'}</span>`;
+  const stamp = (s, cls = '') => s ? `<span class="stamp ${cls}">${esc(showDate(s).toUpperCase())}</span>` : `<span class="stamp none">${cls || backlog ? 'not yet' : 'not logged'}</span>`;
   sheet.innerHTML = `
-    <div class="sheet-head"><h2 id="sheetTitle">${isReading(b) ? 'Reading now' : 'Finished ' + esc(showDate(b.finished))}</h2>
+    <div class="sheet-head"><h2 id="sheetTitle">${backlog ? 'On your backlog' : isReading(b) ? 'Reading now' : 'Finished ' + esc(showDate(b.finished))}</h2>
       <button class="icon-btn" data-close aria-label="Close">${icon('close')}</button></div>
     <div class="sheet-body">
       <div class="detail">
@@ -198,12 +259,13 @@ function openDetail(id) {
         <div>
           <h3>${esc(b.title)}</h3>
           <p class="by">${esc(b.author)}</p>
+          ${backlog ? `<label class="start-check"><input type="checkbox" id="startNow"><span>I’ve started reading this<small>Moves it to Reading now, started today</small></span></label>` : ''}
           <div class="formats-row">${formatsOf(b).map(f => `<span class="fmt-pill">${icon(f.toLowerCase())}${f}</span>`).join('')}</div>
           ${facts.length ? `<dl class="facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl>` : ''}
           <div class="slip" aria-label="Dates">
             <div class="slip-head"><span>Started</span><span>Finished</span></div>
             <div class="slip-row">${stamp(b.started)}${stamp(b.finished, 'second')}</div>
-            <div class="slip-foot">${days ? `Read in ${plural(days, 'day')}` : isReading(b) && fullDate(b.started) ? `Day ${daysBetween(b.started, today())} of reading` : '&nbsp;'}</div>
+            <div class="slip-foot">${backlog ? (b.added ? `On your backlog since ${esc(showDate(b.added))}` : 'On your backlog') : days ? `Read in ${plural(days, 'day')}` : isReading(b) && fullDate(b.started) ? `Day ${daysBetween(b.started, today())} of reading` : '&nbsp;'}</div>
           </div>
         </div>
       </div>
@@ -216,6 +278,13 @@ function openDetail(id) {
     </div>`;
   sheet.dataset.id = id;
   openSheet();
+  sheet.onchange = async ev => {
+    if (ev.target.id !== 'startNow' || !ev.target.checked) return;
+    ev.target.disabled = true;
+    await new Promise(r => setTimeout(r, 350)); // let the tick register before the sheet closes
+    closeSheet();
+    await startReading(b);
+  };
   sheet.onclick = async ev => {
     const act = ev.target.closest('[data-act]')?.dataset.act;
     if (ev.target.closest('[data-close]')) return closeSheet();
@@ -237,12 +306,13 @@ function openSheet() {
 }
 function closeSheet() { sheet.close(); }
 sheet.addEventListener('click', ev => { if (ev.target === sheet) closeSheet(); });
-sheet.addEventListener('close', () => { sheet.onclick = null; });
+sheet.addEventListener('close', () => { sheet.onclick = null; sheet.onchange = null; });
 
 // ---------- editor (add + edit) ----------
 function openEditor(existing) {
   const isNew = !existing;
-  const d = existing ? { ...existing } : { id: newId(), title: '', author: '', isbn: '', format: 'Physical', started: today(), finished: '', pages: '', publisher: '', published: '', cover_url: '', added: today() };
+  const startBacklog = !existing && state.view === 'backlog';
+  const d = existing ? { ...existing, status: statusOf(existing) } : { id: newId(), title: '', author: '', isbn: '', format: 'Physical', status: startBacklog ? 'backlog' : 'reading', started: startBacklog ? '' : today(), finished: '', pages: '', publisher: '', published: '', cover_url: '', added: today() };
   let found = !isNew;
 
   const dateInput = (name, val) => {
@@ -253,9 +323,9 @@ function openEditor(existing) {
   };
 
   const draw = () => {
-    const reading = !d.finished;
+    const st = d.status;
     sheet.innerHTML = `
-      <div class="sheet-head"><h2 id="sheetTitle">${isNew ? 'Add a book' : 'Edit book'}</h2>
+      <div class="sheet-head"><h2 id="sheetTitle">${isNew ? (st === 'backlog' ? 'Add to your backlog' : 'Add a book') : 'Edit book'}</h2>
         <button class="icon-btn" data-close aria-label="Close">${icon('close')}</button></div>
       <form class="sheet-body" id="bookForm" novalidate>
         ${isNew ? `<div class="find">
@@ -285,11 +355,14 @@ function openEditor(existing) {
               <div class="toggle-fmt" role="group" aria-labelledby="fmtLab">
                 ${FORMATS.map(f => `<button type="button" class="chip" data-tfmt="${f}" aria-pressed="${formatsOf(d).includes(f)}">${icon(f.toLowerCase())}${f}</button>`).join('')}
               </div>
-              <p class="hint">Pick more than one if you switched between them.</p></div>
-            <label class="field"><span>Started</span>${dateInput('started', d.started)}</label>
-            <div class="field"><span>Finished</span>
-              ${reading ? `<label class="check"><input type="checkbox" id="stillReading" checked> Still reading</label>` : dateInput('finished', d.finished)}
-              ${!reading ? `<label class="check"><input type="checkbox" id="stillReading"> Still reading</label>` : ''}</div>
+              <p class="hint">${st === 'backlog' ? 'The format you own it in.' : 'Pick more than one if you switched between them.'}</p></div>
+            <div class="field wide"><span id="stLab">Status</span>
+              <div class="toggle-fmt" role="group" aria-labelledby="stLab">
+                ${[['backlog', 'On my backlog'], ['reading', 'Reading'], ['finished', 'Finished']].map(([k, lab]) => `<button type="button" class="chip" data-status="${k}" aria-pressed="${st === k}">${lab}</button>`).join('')}
+              </div>
+              ${st === 'backlog' ? '<p class="hint">Owned but not started. It stays off your shelf and stats until you start it.</p>' : ''}</div>
+            ${st !== 'backlog' ? `<label class="field"><span>Started</span>${dateInput('started', d.started)}</label>` : ''}
+            ${st === 'finished' ? `<label class="field"><span>Finished</span>${dateInput('finished', d.finished)}</label>` : st === 'reading' ? '<div class="field"></div>' : ''}
             <label class="field"><span>ISBN</span><input class="input" name="isbn" inputmode="numeric" value="${esc(d.isbn)}"></label>
             <label class="field"><span>Pages</span><input class="input" name="pages" inputmode="numeric" value="${esc(d.pages)}"></label>
             <label class="field"><span>Publisher</span><input class="input" name="publisher" value="${esc(d.publisher)}"></label>
@@ -300,7 +373,7 @@ function openEditor(existing) {
       </form>
       ${found ? `<div class="sheet-actions">
         ${!isNew ? '<button type="button" class="btn quiet" data-act="cancel">Cancel</button>' : ''}<span class="spacer"></span>
-        <button type="submit" form="bookForm" class="btn primary">${isNew ? 'Add to log' : 'Save changes'}</button></div>` : ''}`;
+        <button type="submit" form="bookForm" class="btn primary">${isNew ? (st === 'backlog' ? 'Add to backlog' : 'Add to log') : 'Save changes'}</button></div>` : ''}`;
     openSheet();
   };
 
@@ -334,7 +407,8 @@ function openEditor(existing) {
       if (!r) return status('No book found for that ISBN. Try searching by title instead.', true);
       const dup = state.books.find(b => b.isbn === isbn);
       fill(r);
-      status(dup ? `Already in your log: ${dup.title} (${dup.finished ? 'finished ' + showDate(dup.finished) : 'reading'}). Saving will add it again.` : '');
+      const where = dup && ({ backlog: 'on your backlog', reading: 'reading now', finished: 'finished ' + showDate(dup.finished) })[statusOf(dup)];
+      status(dup ? `Already added: ${dup.title} (${where}). Saving will add it again.` : '');
     } catch {
       status('Couldn’t reach the book databases. Check your connection, or enter the details by hand.', true);
     }
@@ -378,7 +452,7 @@ function openEditor(existing) {
 
   sheet.onclick = async ev => {
     if (ev.target.closest('[data-close]')) return closeSheet();
-    const t = ev.target.closest('[data-act],[data-tfmt],[data-clear],[data-exact]');
+    const t = ev.target.closest('[data-act],[data-tfmt],[data-clear],[data-exact],[data-status]');
     if (!t) return;
     const act = t.dataset.act;
     if (act === 'lookup') doLookup();
@@ -399,15 +473,17 @@ function openEditor(existing) {
       d.format = FORMATS.filter(x => cur.includes(x)).join('/');
       $$('[data-tfmt]', sheet).forEach(b => b.setAttribute('aria-pressed', String(cur.includes(b.dataset.tfmt))));
     }
+    if (t.dataset.status) {
+      readForm();
+      d.status = t.dataset.status;
+      if (d.status !== 'backlog' && !d.started) d.started = today();
+      if (d.status === 'finished' && !d.finished) d.finished = today();
+      draw();
+    }
     if (t.dataset.clear) { readForm(); d[t.dataset.clear] = ''; if (t.dataset.clear === 'finished') d.finished = ''; draw(); }
     if (t.dataset.exact) { readForm(); d[t.dataset.exact] = d[t.dataset.exact] + '-01'; draw(); }
   };
   sheet.onchange = async ev => {
-    if (ev.target.id === 'stillReading') {
-      readForm();
-      d.finished = ev.target.checked ? '' : today();
-      draw();
-    }
     if (ev.target.id === 'photo' && ev.target.files[0]) {
       readForm();
       d.cover_url = await shrinkImage(ev.target.files[0]);
@@ -425,9 +501,13 @@ function openEditor(existing) {
     if (!d.title) { $('#bookForm').elements.title.focus(); return toast('Add a title first'); }
     if (d.isbn) d.isbn = cleanISBN(d.isbn) || d.isbn;
     if (d.pages) d.pages = String(parseInt(d.pages, 10) || '');
+    if (d.status === 'backlog') { d.started = ''; d.finished = ''; }
+    if (d.status === 'reading') d.finished = '';
+    if (d.status === 'finished' && !d.finished) return toast('Add the date you finished it');
     if (d.started && d.finished && d.started > d.finished && fullDate(d.finished)) return toast('The finish date is before the start date');
+    if (d.status !== 'backlog' && existing?.status === 'backlog' && existing.added) d.added = existing.added;
     await saveBook(d);
-    toast(isNew ? `Added “${d.title}”` : 'Changes saved');
+    toast(isNew ? (d.status === 'backlog' ? `Added “${d.title}” to your backlog` : `Added “${d.title}”`) : 'Changes saved');
     openDetail(d.id);
   };
   draw();
@@ -656,7 +736,7 @@ function renderBackup() {
     </section>
     <section class="card">
       <h2>Restore or import</h2>
-      <p>Choose a CSV from Files. It can be a backup from this app, or a sheet laid out like your old spreadsheet (Title, Author, Year, Month, Format).</p>
+      <p>Choose a CSV from Files. It can be a backup from this app, or a sheet laid out like your old spreadsheet: Title, Author, Year, Month, Format for books you’ve read, or Title, Author, Year Bought, Format for your backlog.</p>
       <div class="row"><button class="btn" data-act="import-merge">Import and merge</button>
         <button class="btn danger" data-act="import-replace">Replace everything</button></div>
       <p class="hint" style="margin-top:12px">Merging keeps your current books and adds or updates the ones in the file. Replacing swaps your whole log for the file.</p>
@@ -751,7 +831,7 @@ async function importCSV(mode, text) {
   }
   // A fresh import from a backup means the backup is current.
   if (mode === 'replace') await markBackedUp();
-  setView('shelf');
+  setView(incoming.every(isBacklog) ? 'backlog' : 'shelf');
 }
 
 async function findCovers() {
@@ -792,7 +872,7 @@ main.addEventListener('click', async ev => {
   const book = ev.target.closest('.book');
   if (book) return openDetail(book.dataset.id);
   const chip = ev.target.closest('[data-fmt]');
-  if (chip) { state.fmt = chip.dataset.fmt || null; return renderShelf(); }
+  if (chip) { state.fmt = chip.dataset.fmt || null; return render(); }
   const yr = ev.target.closest('[data-year]');
   if (yr) { state.statsYear = +yr.dataset.year; return renderStats(); }
   const act = ev.target.closest('[data-act]')?.dataset.act;

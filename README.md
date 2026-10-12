@@ -26,6 +26,12 @@ Netlify works too: sign in at app.netlify.com, choose **Add new site › Deploy 
 2. In the app, tap **Import a CSV** (or go to **Backup › Replace everything**) and pick that file.
 3. Go to **Backup › Find covers** to fetch covers and page counts for your older books. This takes about 4 to 5 minutes for 244 books. If a cover is wrong, open the book, tap **Edit**, then **Choose another cover** or **Use a photo**.
 
+## Your backlog
+
+The **Backlog** tab holds books you own but haven't started. On that tab, **Add to backlog** works just like adding a book (ISBN, scan or title search), but no dates are needed. When you start one, open it and tick **I've started reading this**. It moves to **Reading now** on the Shelf with today as the start date, and you can tap **Undo** in the message that appears. Backlog books aren't counted in your stats.
+
+You can also change any book's status from its **Edit** screen: On my backlog, Reading or Finished.
+
 ## Backing up to iCloud
 
 iPadOS doesn't let web apps write files on their own, so a backup takes one tap from you:
@@ -41,12 +47,13 @@ A red dot on the Backup tab, and a banner on the shelf, show when books have cha
 | id | Internal ID. Keep it as it is so that merges match books correctly |
 | title, author, isbn | |
 | format | `Physical`, `Kindle`, `Audiobook`, or a combination such as `Physical/Kindle` |
+| status | `backlog`, `reading` or `finished`. If it's missing, books with a finish date count as finished and the rest as reading |
 | started, finished | `YYYY-MM-DD`. Older entries may have only `YYYY-MM`. An empty `finished` means you're still reading it |
 | pages, publisher, published | From the lookup. `published` is the year |
 | cover_url | Link to the cover image, or an embedded photo |
 | added, updated | When the entry was created or last changed |
 
-The file opens in Numbers and Excel. If you edit it there, import it again with **Import and merge**.
+The file opens in Numbers and Excel. If you edit it there, import it again with **Import and merge**. A sheet with the columns Title, Author, Year Bought and Format (like the "To Read Log" tab in your old spreadsheet) is imported straight into the backlog.
 
 ## Updating the app
 

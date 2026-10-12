@@ -44,7 +44,7 @@ export const db = {
 };
 
 // ---------- CSV ----------
-export const COLUMNS = ['id', 'title', 'author', 'isbn', 'format', 'started', 'finished', 'pages', 'publisher', 'published', 'cover_url', 'added', 'updated'];
+export const COLUMNS = ['id', 'title', 'author', 'isbn', 'format', 'status', 'started', 'finished', 'pages', 'publisher', 'published', 'cover_url', 'added', 'updated'];
 
 function esc(v) {
   const s = v == null ? '' : String(v);
@@ -100,13 +100,17 @@ export function booksFromCSV(text) {
   const head = rows[hi].map(h => h.trim().toLowerCase().replace(/\s+/g, '_'));
   const col = name => head.indexOf(name);
   const legacy = col('id') < 0 && col('year') >= 0;
+  const legacyToRead = col('id') < 0 && col('year_bought') >= 0;
   const out = [];
   for (const r of rows.slice(hi + 1)) {
     const get = name => { const k = col(name); return k >= 0 ? (r[k] || '').trim() : ''; };
     const title = get('title');
     if (!title) continue;
     let b;
-    if (legacy) {
+    if (legacyToRead) {
+      const y = get('year_bought');
+      b = { title, author: get('author'), format: normaliseFormat(get('format')), status: 'backlog', started: '', finished: '', added: /^\d{4}$/.test(y) ? `${y}-01-01` : '' };
+    } else if (legacy) {
       const y = get('year'), m = MONTHS[get('month').slice(0, 3).toLowerCase()];
       const finished = y ? (m ? `${y}-${String(m).padStart(2, '0')}` : `${y}`) : '';
       b = { title, author: get('author'), format: normaliseFormat(get('format')), finished, started: '' };
@@ -115,12 +119,19 @@ export function booksFromCSV(text) {
       for (const c of COLUMNS) b[c] = get(c);
       if (b.format) b.format = b.format.split('/').map(x => normaliseFormat(x)).join('/');
     }
+    b.status = normaliseStatus(b.status, b);
     if (!b.id) b.id = newId();
     if (b.pages) b.pages = String(parseInt(b.pages, 10) || '');
     b.added ||= today();
     out.push(b);
   }
   return out;
+}
+
+function normaliseStatus(s, b) {
+  s = (s || '').toLowerCase();
+  if (/backlog|to.?read|tbr|unread|owned/.test(s)) return 'backlog';
+  return b.finished ? 'finished' : 'reading';
 }
 
 export function newId() {

@@ -1,5 +1,5 @@
 // Offline support: the app itself is cached on install; covers and fonts are cached as they're seen.
-const VERSION = 'v1.0.0';
+const VERSION = 'v1.1.0';
 const SHELL = `shell-${VERSION}`;
 const COVERS = 'covers-v1';
 const FONTS = 'fonts-v1';
